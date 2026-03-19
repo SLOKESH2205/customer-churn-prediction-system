@@ -211,3 +211,13 @@ venv/
 dataset/
 __pycache__/
 .ipynb_checkpoints/
+
+
+# ================= PROJECT SPECIFIC =================
+
+artifacts/
+data/raw/
+
+*.csv
+*.xlsx
+*.pkl
