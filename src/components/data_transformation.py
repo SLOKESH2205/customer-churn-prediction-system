@@ -31,8 +31,8 @@ class DataTransformation:
             test_df = pd.read_csv(test_path)
 
             # 🔥 APPLY FEATURE ENGINEERING
-            train_df = build_features(train_df)
-            test_df = build_features(test_df)
+            train_df, _ = build_features(train_df)
+            test_df, _ = build_features(test_df)
 
             # ================= VALIDATION ================= #
             missing_cols = [col for col in self.model_features if col not in train_df.columns]
