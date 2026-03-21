@@ -46,7 +46,37 @@ def preprocess_uploaded_data(raw_df: pd.DataFrame):
 
 @st.cache_resource
 def train_dynamic_model(customer_df: pd.DataFrame):
-    return ChurnModelService.train_from_customer_df(customer_df)
+    model_service = ChurnModelService()
+    model_df = model_service_input_matrix(customer_df)
+    target = customer_df["retention_status"].astype(int)
+    return train_model_service(model_service, model_df, target)
+
+
+def model_service_input_matrix(customer_df: pd.DataFrame) -> pd.DataFrame:
+    from sklearn.impute import SimpleImputer
+    from src.preprocessing import prepare_model_matrix
+
+    model_df = prepare_model_matrix(customer_df)
+    imputer = SimpleImputer(strategy="median")
+    return pd.DataFrame(
+        imputer.fit_transform(model_df),
+        columns=model_df.columns,
+        index=model_df.index,
+    )
+
+
+def train_model_service(model_service: ChurnModelService, model_df: pd.DataFrame, target: pd.Series):
+    from sklearn.model_selection import train_test_split
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        model_df,
+        target,
+        test_size=0.2,
+        random_state=42,
+        stratify=target if target.nunique() > 1 else None,
+    )
+    model_service.train(X_train, y_train, X_test, y_test)
+    return model_service
 
 
 def make_display_table(df: pd.DataFrame, rename_map: dict) -> pd.DataFrame:
@@ -357,11 +387,11 @@ if uploaded_file:
             f"{clustering_metrics.get('inertia', float('nan')):.1f}",
         )
 
-        if hasattr(model_service, "evaluation_metrics"):
-            clf_metrics = model_service.evaluation_metrics
-        else:
+        if not hasattr(model_service, "evaluation_metrics") or model_service.evaluation_metrics is None:
             clf_metrics = {}
             st.warning("Evaluation metrics not available.")
+        else:
+            clf_metrics = model_service.evaluation_metrics
 
         perf_col1, perf_col2, perf_col3, perf_col4, perf_col5 = st.columns(5)
         perf_col1.metric("Accuracy", f"{clf_metrics.get('accuracy', float('nan')):.2f}")

@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from typing import Dict, List
 
 import numpy as np
@@ -21,42 +20,91 @@ from sklearn.preprocessing import StandardScaler
 from src.preprocessing import prepare_model_matrix
 
 
-@dataclass
-class DynamicChurnArtifacts:
-    model: RandomForestClassifier
-    scaler: StandardScaler
-    train_columns: List[str]
-    threshold: float
-    model_name: str = "Random Forest"
-    evaluation_metrics: Dict[str, float] | None = None
-    confusion_matrix: List[List[int]] | None = None
-    roc_curve_points: Dict[str, List[float]] | None = None
-    classification_report_text: str = ""
-
 class ChurnModelService:
     """Train-on-upload churn service used by the Streamlit app."""
 
-    def __init__(self, artifacts: DynamicChurnArtifacts):
-        self.model = artifacts.model
-        self.scaler = artifacts.scaler
-        self.train_columns = artifacts.train_columns
-        self.threshold = artifacts.threshold
-        self.model_name = artifacts.model_name
-        self.evaluation_metrics = artifacts.evaluation_metrics or {}
-        self.confusion_matrix = artifacts.confusion_matrix or []
-        self.roc_curve_points = artifacts.roc_curve_points or {}
-        self.classification_report_text = artifacts.classification_report_text
+    def __init__(self):
+        self.model = None
+        self.scaler = None
+        self.train_columns: List[str] = []
+        self.threshold = 0.5
+        self.model_name = "Random Forest"
+        self.evaluation_metrics = None
+        self.confusion_matrix = []
+        self.roc_curve_points = {}
+        self.classification_report_text = ""
         self.last_processed_df = None
-        self.features = artifacts.train_columns
+        self.features: List[str] = []
 
-    def evaluate(self, y_true, y_pred, y_proba) -> Dict[str, float]:
+    def evaluate(self, y_true, y_pred, y_proba):
+        if len(y_true) == 0:
+            return None
+
+        roc_auc = float("nan")
+        if len(np.unique(y_true)) > 1:
+            roc_auc = float(roc_auc_score(y_true, y_proba))
+
         return {
             "accuracy": float(accuracy_score(y_true, y_pred)),
             "precision": float(precision_score(y_true, y_pred, zero_division=0)),
             "recall": float(recall_score(y_true, y_pred, zero_division=0)),
             "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
-            "roc_auc": float(roc_auc_score(y_true, y_proba)) if len(np.unique(y_true)) > 1 else float("nan"),
+            "roc_auc": roc_auc,
         }
+
+    def train(self, X_train, y_train, X_test, y_test):
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+
+        self.model = RandomForestClassifier(
+            n_estimators=200,
+            random_state=42,
+            class_weight="balanced",
+            min_samples_leaf=2,
+            n_jobs=1,
+        )
+        self.model.fit(X_train_scaled, y_train)
+
+        self.train_columns = X_train.columns.tolist()
+        self.features = self.train_columns
+        self.confusion_matrix = []
+        self.roc_curve_points = {}
+        self.classification_report_text = ""
+        self.evaluation_metrics = None
+
+        if len(y_test) == 0:
+            return self
+
+        y_prob = self.model.predict_proba(X_test_scaled)[:, 1]
+
+        best_threshold = 0.5
+        best_f1 = -1.0
+        for threshold in np.arange(0.2, 0.75, 0.05):
+            y_pred = (y_prob >= threshold).astype(int)
+            score = f1_score(y_test, y_pred, zero_division=0)
+            if score > best_f1:
+                best_f1 = score
+                best_threshold = float(threshold)
+
+        self.threshold = best_threshold
+        final_pred = (y_prob >= self.threshold).astype(int)
+        self.evaluation_metrics = self.evaluate(y_test, final_pred, y_prob)
+        self.confusion_matrix = confusion_matrix(y_test, final_pred).tolist()
+        self.classification_report_text = classification_report(
+            y_test,
+            final_pred,
+            zero_division=0,
+        )
+
+        if len(np.unique(y_test)) > 1:
+            fpr, tpr, _ = roc_curve(y_test, y_prob)
+            self.roc_curve_points = {
+                "fpr": fpr.tolist(),
+                "tpr": tpr.tolist(),
+            }
+
+        return self
 
     @classmethod
     def train_from_customer_df(cls, customer_df: pd.DataFrame) -> "ChurnModelService":
@@ -78,64 +126,8 @@ class ChurnModelService:
             stratify=target if target.nunique() > 1 else None,
         )
 
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        model = RandomForestClassifier(
-            n_estimators=200,
-            random_state=42,
-            class_weight="balanced",
-            min_samples_leaf=2,
-            n_jobs=1,
-        )
-        model.fit(X_train_scaled, y_train)
-
-        best_threshold = 0.5
-        best_f1 = -1.0
-        best_metrics = {}
-        best_confusion = []
-        best_report = ""
-        best_roc_curve = {}
-        if y_test.nunique() > 1:
-            y_prob = model.predict_proba(X_test_scaled)[:, 1]
-            for threshold in np.arange(0.2, 0.75, 0.05):
-                y_pred = (y_prob >= threshold).astype(int)
-                score = f1_score(y_test, y_pred, zero_division=0)
-                if score > best_f1:
-                    best_f1 = score
-                    best_threshold = float(threshold)
-
-            final_pred = (y_prob >= best_threshold).astype(int)
-            temp_service = cls(
-                DynamicChurnArtifacts(
-                    model=model,
-                    scaler=scaler,
-                    train_columns=model_df.columns.tolist(),
-                    threshold=best_threshold,
-                )
-            )
-            temp_service.evaluation_metrics = temp_service.evaluate(y_test, final_pred, y_prob)
-            best_metrics = temp_service.evaluation_metrics
-            best_confusion = confusion_matrix(y_test, final_pred).tolist()
-            best_report = classification_report(y_test, final_pred, zero_division=0)
-            fpr, tpr, _ = roc_curve(y_test, y_prob)
-            best_roc_curve = {
-                "fpr": fpr.tolist(),
-                "tpr": tpr.tolist(),
-            }
-
-        artifacts = DynamicChurnArtifacts(
-            model=model,
-            scaler=scaler,
-            train_columns=model_df.columns.tolist(),
-            threshold=best_threshold,
-            evaluation_metrics=best_metrics,
-            confusion_matrix=best_confusion,
-            roc_curve_points=best_roc_curve,
-            classification_report_text=best_report,
-        )
-        return cls(artifacts)
+        service = cls()
+        return service.train(X_train, y_train, X_test, y_test)
 
     def score_customer_df(self, customer_df: pd.DataFrame) -> pd.DataFrame:
         model_df = prepare_model_matrix(customer_df, training_columns=self.train_columns)
@@ -173,7 +165,7 @@ class ChurnModelService:
         return result_df.join(customer_df[feature_cols].reset_index(drop=True))
 
     def get_feature_importance_table(self, top_n: int = 10) -> pd.DataFrame:
-        if not hasattr(self.model, "feature_importances_"):
+        if self.model is None or not hasattr(self.model, "feature_importances_"):
             return pd.DataFrame(columns=["Feature", "Importance", "Importance (%)"])
 
         raw_importance = pd.DataFrame(
