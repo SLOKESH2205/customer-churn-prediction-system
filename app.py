@@ -15,6 +15,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def generate_insights(row):
+    insights = []
+
+    engagement_score = row.get("engagement_score", row.get("purchase_rate", 0))
+    tenure = row.get("tenure", 0)
+    usage = row.get("usage", row.get("frequency_log", 0))
+
+    if engagement_score < 0.3:
+        insights.append("Low engagement -> High churn risk")
+
+    if tenure < 6:
+        insights.append("New customer -> Higher churn probability")
+
+    if usage < 5:
+        insights.append("Low usage -> Potential disengagement")
+
+    return insights
+
+
 @st.cache_data
 def load_uploaded_data(uploaded_file):
     if uploaded_file.name.lower().endswith(".csv"):
@@ -523,11 +542,23 @@ if uploaded_file:
                 clean_insights.append(insight)
                 seen.add(insight)
 
+        st.subheader("💡 Insights")
+        top_customer = result_df.sort_values("Churn Probability", ascending=False).iloc[0]
+        generated_insights = generate_insights(top_customer)
+        if generated_insights:
+            for item in generated_insights:
+                st.write(f"- {item}")
+        else:
+            st.write("- No rule-based insights triggered for the highest-risk customer.")
+
         render_section_header(
             "Business Recommendations",
             "This is the explicit persona-to-action layer: each segment is mapped to a primary action, targeting rule, owner, and execution play.",
         )
         st.dataframe(segment_outputs["action_table"], use_container_width=True)
+
+        st.subheader("📌 Business Impact")
+        st.write("This system helps identify high-risk customers early and enables targeted retention strategies.")
 
         render_section_header(
             "What-If Impact Simulator",

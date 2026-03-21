@@ -168,6 +168,67 @@ Exports:
 
 ---
 
+### 🔹 Detailed Benchmark Results
+
+### 🔹 Clustering (Customer Segmentation)
+
+| Model | Silhouette Score |
+|------|----------------|
+| KMeans | **0.5209** |
+| MiniBatch KMeans | 0.5207 |
+| Gaussian Mixture Model (GMM) | 0.3944 |
+
+👉 KMeans was selected as the final clustering model due to the highest silhouette score and better cluster stability.
+
+**Key Observations:**
+- Identified 3 distinct customer segments
+- One cluster represents a very small segment (~44 customers in test set), indicating niche or outlier behavior
+- Remaining clusters represent dominant behavioral groups
+
+---
+
+### 🔹 Churn Prediction (Best Model: XGBoost)
+
+| Metric | Score |
+|------|------|
+| Accuracy | **0.7381** |
+| Precision | **0.7103** |
+| Recall | **0.7889** |
+| F1 Score | **0.7475** |
+| ROC-AUC | **0.8164** |
+
+👉 Model is optimized for **recall**, ensuring high detection of churn-prone customers.
+
+---
+
+### 🔹 Model Comparison
+
+| Model | Accuracy | Precision | Recall | F1 Score | ROC-AUC |
+|------|----------|----------|--------|----------|--------|
+| Logistic Regression | 0.7185 | 0.6803 | 0.8062 | 0.7379 | 0.8030 |
+| Random Forest | 0.7245 | 0.6879 | 0.8045 | 0.7416 | 0.8062 |
+| XGBoost | **0.7381** | **0.7103** | 0.7889 | **0.7475** | **0.8164** |
+
+👉 XGBoost selected due to:
+- Highest F1 score (best balance)
+- Strong ROC-AUC (discriminative power)
+- Stable performance across classes
+
+---
+
+### 🔹 Confusion Matrix (XGBoost)
+
+```
+[[412 186]
+ [122 456]]
+```
+
+👉 Interpretation:
+- Model correctly identifies majority of churn customers (high recall)
+- Some false positives exist, acceptable for retention-focused systems
+
+---
+
 ## 🖥️ Dashboard Features
 
 * Interactive controls (threshold, cost, uplift)
@@ -242,6 +303,7 @@ git clone https://github.com/SLOKESH2205/customer-churn-prediction-system.git
 cd customer-churn-prediction-system
 
 pip install -r requirements.txt
+python src/components/run_trainer.py
 streamlit run app.py
 ```
 

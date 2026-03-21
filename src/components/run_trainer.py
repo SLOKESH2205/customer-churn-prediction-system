@@ -2,6 +2,7 @@ import os
 import joblib
 import logging
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 from src.components.data_ingestion import DataIngestion
 from src.components.feature_engineering import build_features
@@ -14,15 +15,29 @@ if __name__ == "__main__":
     logging.info("RUNNING FULL ML PIPELINE")
 
     ingestion = DataIngestion()
-    train_path, test_path = ingestion.initiate_data_ingestion(
+    ingestion.initiate_data_ingestion(
         file_path="data/raw/online_retail_II.xlsx"
     )
 
-    train_df = pd.read_csv(train_path)
-    test_df = pd.read_csv(test_path)
+    raw_df = pd.read_csv(ingestion.raw_data_path)
+    customer_df, kmeans_model = build_features(raw_df)
 
-    train_df, kmeans_model = build_features(train_df)
-    test_df, _ = build_features(test_df, kmeans_model)
+    X = customer_df.drop(columns=["retention_status"])
+    y = customer_df["retention_status"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y
+    )
+
+    train_df = X_train.copy()
+    train_df["retention_status"] = y_train.values
+
+    test_df = X_test.copy()
+    test_df["retention_status"] = y_test.values
 
     trainer = ModelTrainer()
 

@@ -3,8 +3,10 @@ import sys
 import joblib
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from sklearn.cluster import KMeans, MiniBatchKMeans
+from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
 
@@ -41,6 +43,7 @@ class CustomerClustering:
 
             # Save model (IMPORTANT: save original model without modification)
             os.makedirs("artifacts", exist_ok=True)
+            os.makedirs("outputs", exist_ok=True)
             joblib.dump(kmeans, self.kmeans_model_path)
 
             print(f"\nModel saved at: {self.kmeans_model_path}")
@@ -48,6 +51,17 @@ class CustomerClustering:
             # Score
             score = silhouette_score(X_scaled, labels)
             print(f"KMeans Silhouette Score: {score:.4f}")
+
+            pca = PCA(n_components=2)
+            X_reduced = pca.fit_transform(X_scaled)
+            plt.figure(figsize=(7, 5))
+            plt.scatter(X_reduced[:, 0], X_reduced[:, 1], c=labels, cmap="viridis", s=20)
+            plt.title("Customer Segmentation (PCA)")
+            plt.xlabel("PC1")
+            plt.ylabel("PC2")
+            plt.tight_layout()
+            plt.savefig(os.path.join("outputs", "cluster_plot.png"))
+            plt.close()
 
             return df, score
 

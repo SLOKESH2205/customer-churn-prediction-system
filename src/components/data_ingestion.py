@@ -7,14 +7,14 @@ import logging
 from src.logger import setup_logger
 from src.exception import CustomException
 
-print("TOP LEVEL EXECUTION")
+
 class DataIngestion:
     def __init__(self):
         self.raw_data_path = os.path.join("artifacts", "raw.csv")
         self.train_data_path = os.path.join("artifacts", "train.csv")
         self.test_data_path = os.path.join("artifacts", "test.csv")
 
-    def initiate_data_ingestion(self, file_path: str):
+    def initiate_data_ingestion(self, file_path: str, split_type: str = "time"):
         try:
             logging.info("Starting data ingestion")
 
@@ -76,13 +76,29 @@ class DataIngestion:
             # Create artifacts folder
             os.makedirs("artifacts", exist_ok=True)
 
-            # Save raw cleaned data
+            # Save cleaned raw data
             df.to_csv(self.raw_data_path, index=False)
 
-            # Train-test split
-            train_set, test_set = train_test_split(
-                df, test_size=0.2, random_state=42
-            )
+            # ================= SPLIT LOGIC ================= #
+            logging.info(f"Using split type: {split_type}")
+
+            if split_type == "random":
+                train_set, test_set = train_test_split(
+                    df, test_size=0.2, random_state=42
+                )
+
+            elif split_type == "time":
+                df = df.sort_values("invoicedate")
+
+                split_index = int(0.8 * len(df))
+
+                train_set = df.iloc[:split_index]
+                test_set = df.iloc[split_index:]
+
+            else:
+                raise Exception("Invalid split type. Choose 'random' or 'time'.")
+
+            # ================================================= #
 
             # Save splits
             train_set.to_csv(self.train_data_path, index=False)
@@ -102,16 +118,18 @@ class DataIngestion:
 # Entry point
 if __name__ == "__main__":
     try:
-        setup_logger()  # Initialize logging here
+        setup_logger()
 
         print("MAIN BLOCK RUNNING")
 
         ingestion = DataIngestion()
 
         file_path = os.path.join("data", "raw", "online_retail_II.xlsx")
-        print(f"Using file path: {file_path}")
 
-        train_path, test_path = ingestion.initiate_data_ingestion(file_path)
+        train_path, test_path = ingestion.initiate_data_ingestion(
+            file_path=file_path,
+            split_type="time"   # 🔥 change to "random" if needed
+        )
 
         print("\nData ingestion completed successfully")
         print(f"Train file: {train_path}")
