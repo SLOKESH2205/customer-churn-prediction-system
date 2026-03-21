@@ -5,7 +5,7 @@ if __name__ == "__main__":
 
     df = pd.read_csv("artifacts/test.csv")
 
-    pipe = PredictPipeline()
+    pipe = PredictPipeline(df)
 
     results = pipe.predict(df)
 

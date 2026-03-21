@@ -1,48 +1,98 @@
-import os
+from dataclasses import dataclass
 from typing import Dict, List
 
-import joblib
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
-from src.preprocessing import build_customer_features, prepare_model_matrix
+from src.preprocessing import prepare_model_matrix
+
+
+@dataclass
+class DynamicChurnArtifacts:
+    model: RandomForestClassifier
+    scaler: StandardScaler
+    train_columns: List[str]
+    threshold: float
+    model_name: str = "Random Forest"
 
 
 class ChurnModelService:
-    """Shared inference and explainability layer for the app and pipelines."""
+    """Train-on-upload churn service used by the Streamlit app."""
 
-    def __init__(
-        self,
-        model_path: str = os.path.join("artifacts", "model.pkl"),
-        scaler_path: str = os.path.join("artifacts", "model_scaler.pkl"),
-        cluster_model_path: str = os.path.join("artifacts", "kmeans.pkl"),
-        encoded_features_path: str = os.path.join("artifacts", "encoded_features.pkl"),
-        legacy_features_path: str = os.path.join("artifacts", "features.pkl"),
-    ):
-        loaded_obj = joblib.load(model_path)
-        if isinstance(loaded_obj, dict):
-            self.model = loaded_obj["model"]
-            self.threshold = loaded_obj["threshold"]
-        else:
-            self.model = loaded_obj
-            self.threshold = 0.5
-
-        self.scaler = joblib.load(scaler_path)
-        self.kmeans = joblib.load(cluster_model_path)
-
-        try:
-            self.train_columns = joblib.load(encoded_features_path)
-        except FileNotFoundError:
-            self.train_columns = joblib.load(legacy_features_path)
-
+    def __init__(self, artifacts: DynamicChurnArtifacts):
+        self.model = artifacts.model
+        self.scaler = artifacts.scaler
+        self.train_columns = artifacts.train_columns
+        self.threshold = artifacts.threshold
+        self.model_name = artifacts.model_name
         self.last_processed_df = None
-        self.features = []
+        self.features = artifacts.train_columns
 
-    def predict_customers(self, df: pd.DataFrame) -> pd.DataFrame:
-        customer_df, _ = build_customer_features(df, self.kmeans)
-        customer_ids = customer_df["customer_id"].values if "customer_id" in customer_df.columns else None
+    @classmethod
+    def train_from_customer_df(cls, customer_df: pd.DataFrame) -> "ChurnModelService":
+        model_df = prepare_model_matrix(customer_df)
+        target = customer_df["retention_status"].astype(int)
 
-        model_df = prepare_model_matrix(customer_df, self.train_columns)
+        imputer = SimpleImputer(strategy="median")
+        model_df = pd.DataFrame(
+            imputer.fit_transform(model_df),
+            columns=model_df.columns,
+            index=model_df.index,
+        )
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            model_df,
+            target,
+            test_size=0.2,
+            random_state=42,
+            stratify=target if target.nunique() > 1 else None,
+        )
+
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        model = RandomForestClassifier(
+            n_estimators=200,
+            random_state=42,
+            class_weight="balanced",
+            min_samples_leaf=2,
+            n_jobs=1,
+        )
+        model.fit(X_train_scaled, y_train)
+
+        best_threshold = 0.5
+        best_f1 = -1.0
+        if y_test.nunique() > 1:
+            y_prob = model.predict_proba(X_test_scaled)[:, 1]
+            for threshold in np.arange(0.2, 0.75, 0.05):
+                y_pred = (y_prob >= threshold).astype(int)
+                score = f1_score(y_test, y_pred, zero_division=0)
+                if score > best_f1:
+                    best_f1 = score
+                    best_threshold = float(threshold)
+
+        artifacts = DynamicChurnArtifacts(
+            model=model,
+            scaler=scaler,
+            train_columns=model_df.columns.tolist(),
+            threshold=best_threshold,
+        )
+        return cls(artifacts)
+
+    def score_customer_df(self, customer_df: pd.DataFrame) -> pd.DataFrame:
+        model_df = prepare_model_matrix(customer_df, training_columns=self.train_columns)
+        imputer = SimpleImputer(strategy="median")
+        model_df = pd.DataFrame(
+            imputer.fit_transform(model_df),
+            columns=model_df.columns,
+            index=model_df.index,
+        )
         self.last_processed_df = model_df.copy()
         self.features = model_df.columns.tolist()
 
@@ -52,7 +102,7 @@ class ChurnModelService:
 
         result_df = pd.DataFrame(
             {
-                "customer_id": customer_ids,
+                "customer_id": customer_df["customer_id"].values,
                 "Churn_Label": churn_label,
                 "Churn Probability": churn_probability,
                 "cluster": customer_df["final_kmeans_cluster"].values,
@@ -68,8 +118,7 @@ class ChurnModelService:
             "purchase_rate",
             "monetary_per_day",
         ]
-        result_df = result_df.join(customer_df[feature_cols].reset_index(drop=True))
-        return result_df
+        return result_df.join(customer_df[feature_cols].reset_index(drop=True))
 
     def get_feature_importance_table(self, top_n: int = 10) -> pd.DataFrame:
         if not hasattr(self.model, "feature_importances_"):
@@ -101,8 +150,6 @@ class ChurnModelService:
             "unique_items_purchased": "Narrow product breadth can indicate shallow engagement and weaker attachment.",
             "purchase_rate": "Purchase cadence is a behavioral leading indicator of churn.",
             "monetary_per_day": "Revenue generated per day captures whether value creation is sustained over time.",
-            "cluster_1": "Segment membership itself matters, suggesting churn is concentrated in a specific persona.",
-            "cluster_2": "Segment membership itself matters, suggesting churn is concentrated in a specific persona.",
         }
 
         driver_insights = [

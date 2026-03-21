@@ -5,16 +5,12 @@ import pandas as pd
 import streamlit as st
 
 from src.components.segment_analytics import analyze_segments
-from src.pipeline.predict_pipeline import PredictPipeline
+from src.modeling import ChurnModelService
+from src.preprocessing import build_customer_features
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-@st.cache_resource
-def load_pipeline():
-    return PredictPipeline()
 
 
 @st.cache_data
@@ -27,6 +23,22 @@ def load_uploaded_data(uploaded_file):
 @st.cache_data
 def compute_segment_outputs(result_df: pd.DataFrame):
     return analyze_segments(result_df)
+
+
+@st.cache_data
+def preprocess_uploaded_data(raw_df: pd.DataFrame):
+    processed_df, kmeans_model = build_customer_features(raw_df)
+    clustering_meta = {
+        "selected_k": int(getattr(kmeans_model, "selected_k_", kmeans_model.n_clusters)),
+        "selection_summary": getattr(kmeans_model, "selection_summary_", []),
+        "nan_summary": processed_df.attrs.get("nan_summary", pd.Series(dtype=int)).to_dict(),
+    }
+    return processed_df, clustering_meta
+
+
+@st.cache_resource
+def train_dynamic_model(customer_df: pd.DataFrame):
+    return ChurnModelService.train_from_customer_df(customer_df)
 
 
 def make_display_table(df: pd.DataFrame, rename_map: dict) -> pd.DataFrame:
@@ -220,15 +232,17 @@ uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xl
 if uploaded_file:
     try:
         input_df = load_uploaded_data(uploaded_file)
-        pipeline = load_pipeline()
-        result_df = pipeline.predict(input_df)
+        processed_df, clustering_meta = preprocess_uploaded_data(input_df)
+        model_service = train_dynamic_model(processed_df)
+        result_df = model_service.score_customer_df(processed_df)
         result_df["Churn_Label"] = (
             result_df["Churn Probability"] >= confidence_threshold
         ).astype(int)
+        st.success("Model trained dynamically on uploaded data")
 
         segment_outputs = compute_segment_outputs(result_df)
-        explainability = pipeline.service.explain_feature_importance(top_n=10)
-        churn_driver_insights = pipeline.service.explain_customer_churn_pattern(result_df)
+        explainability = model_service.explain_feature_importance(top_n=10)
+        churn_driver_insights = model_service.explain_customer_churn_pattern(result_df)
         impact_table = build_impact_table(
             segment_outputs,
             save_rate=intervention_save_rate,
@@ -241,9 +255,9 @@ if uploaded_file:
             if not segment_outputs["summary"].empty
             else 0
         )
-        selected_k = getattr(pipeline.kmeans, "selected_k_", getattr(pipeline.kmeans, "n_clusters", "unknown"))
+        selected_k = clustering_meta["selected_k"]
         clustering_note = (
-            f"The current saved segmentation model uses K={selected_k}. The largest segment represents {largest_share:.1f}% of customers."
+            f"The current uploaded-data segmentation model selected K={selected_k}. The largest segment represents {largest_share:.1f}% of customers."
         )
 
         render_section_header(
@@ -451,22 +465,32 @@ if uploaded_file:
             st.write(f"Max churn probability: {result_df['Churn Probability'].max():.4f}")
             st.write(f"Mean churn probability: {result_df['Churn Probability'].mean():.4f}")
 
-            selection_summary = getattr(pipeline.kmeans, "selection_summary_", None)
+            selection_summary = clustering_meta.get("selection_summary")
             if selection_summary:
-                st.markdown("**Cluster search summary used during model training**")
+                st.markdown("**Cluster search summary used during dynamic training**")
                 st.dataframe(pd.DataFrame(selection_summary), use_container_width=True)
+
+            nan_summary = clustering_meta.get("nan_summary", {})
+            if nan_summary:
+                st.markdown("**Feature-engineering null check**")
+                st.dataframe(
+                    pd.DataFrame(
+                        {"column": list(nan_summary.keys()), "null_count": list(nan_summary.values())}
+                    ),
+                    use_container_width=True,
+                )
 
             try:
                 import matplotlib.pyplot as plt
                 import shap
 
-                explainer = shap.TreeExplainer(pipeline.model)
-                shap_values = explainer.shap_values(pipeline.last_processed_df.values)
+                explainer = shap.TreeExplainer(model_service.model)
+                shap_values = explainer.shap_values(model_service.last_processed_df.values)
                 fig, ax = plt.subplots(figsize=(10, 6))
                 shap.summary_plot(
                     shap_values,
-                    pipeline.last_processed_df.values,
-                    feature_names=pipeline.features,
+                    model_service.last_processed_df.values,
+                    feature_names=model_service.features,
                     plot_type="bar",
                     show=False,
                 )
