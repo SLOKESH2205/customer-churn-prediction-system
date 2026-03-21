@@ -3,6 +3,7 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 
 from src.clustering import evaluate_clustering
 from src.components.segment_analytics import analyze_segments
@@ -89,6 +90,28 @@ def make_display_table(df: pd.DataFrame, rename_map: dict) -> pd.DataFrame:
 def render_section_header(title: str, description: str):
     st.markdown(f"## {title}")
     st.markdown(description)
+
+
+def compute_live_threshold_metrics(result_df: pd.DataFrame):
+    if "Churn_Label_Actual" not in result_df.columns:
+        return {
+            "accuracy": None,
+            "precision": None,
+            "recall": None,
+            "f1_score": None,
+            "confusion_matrix": None,
+        }
+
+    y_true = result_df["Churn_Label_Actual"]
+    y_pred = result_df["Churn_Label"]
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
+        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
+    }
 
 
 def build_impact_table(
@@ -288,6 +311,7 @@ if uploaded_file:
         segment_outputs = compute_segment_outputs(result_df)
         explainability = model_service.explain_feature_importance(top_n=10)
         churn_driver_insights = model_service.explain_customer_churn_pattern(result_df)
+        live_metrics = compute_live_threshold_metrics(result_df)
         impact_table = build_impact_table(
             segment_outputs,
             save_rate=intervention_save_rate,
@@ -399,23 +423,24 @@ if uploaded_file:
             f"{clustering_metrics.get('inertia', float('nan')):.1f}",
         )
 
-        if not hasattr(model_service, "evaluation_metrics") or model_service.evaluation_metrics is None:
-            clf_metrics = {}
-            st.warning("Evaluation metrics not available.")
-        else:
-            clf_metrics = model_service.evaluation_metrics
+        clf_metrics = live_metrics
+        if clf_metrics["accuracy"] is None:
+            st.warning("Threshold-based evaluation metrics are not available because actual labels are not present in the current result set.")
 
         perf_col1, perf_col2, perf_col3, perf_col4, perf_col5 = st.columns(5)
-        perf_col1.metric("Accuracy", f"{clf_metrics.get('accuracy', float('nan')):.2f}")
-        perf_col2.metric("Precision", f"{clf_metrics.get('precision', float('nan')):.2f}")
-        perf_col3.metric("Recall", f"{clf_metrics.get('recall', float('nan')):.2f}")
-        perf_col4.metric("F1 Score", f"{clf_metrics.get('f1_score', float('nan')):.2f}")
-        perf_col5.metric("ROC-AUC", f"{clf_metrics.get('roc_auc', float('nan')):.2f}")
+        perf_col1.metric("Accuracy", round(clf_metrics["accuracy"], 2) if clf_metrics["accuracy"] is not None else "NA")
+        perf_col2.metric("Precision", round(clf_metrics["precision"], 2) if clf_metrics["precision"] is not None else "NA")
+        perf_col3.metric("Recall", round(clf_metrics["recall"], 2) if clf_metrics["recall"] is not None else "NA")
+        perf_col4.metric("F1 Score", round(clf_metrics["f1_score"], 2) if clf_metrics["f1_score"] is not None else "NA")
+        perf_col5.metric(
+            "ROC-AUC",
+            f"{model_service.evaluation_metrics.get('roc_auc', float('nan')):.2f}" if model_service.evaluation_metrics else "NA",
+        )
 
-        if model_service.confusion_matrix:
+        if clf_metrics["confusion_matrix"] is not None:
             st.markdown("**Confusion Matrix**")
             confusion_df = pd.DataFrame(
-                model_service.confusion_matrix,
+                clf_metrics["confusion_matrix"],
                 index=["Actual 0", "Actual 1"],
                 columns=["Pred 0", "Pred 1"],
             )

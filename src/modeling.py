@@ -153,6 +153,9 @@ class ChurnModelService:
             }
         )
 
+        if "retention_status" in customer_df.columns:
+            result_df["Churn_Label_Actual"] = customer_df["retention_status"].values
+
         feature_cols = [
             "frequency_log",
             "monetary_log",
