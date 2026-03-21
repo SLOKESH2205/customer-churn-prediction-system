@@ -19,8 +19,8 @@ if __name__ == "__main__":
     train_df = pd.read_csv("artifacts/train.csv")
     test_df = pd.read_csv("artifacts/test.csv")
 
-    train_df = build_features(train_df)
-    test_df = build_features(test_df)
+    train_df, _ = build_features(train_df)
+    test_df, _ = build_features(test_df)
 
     # Step 3: Clustering
     clustering = CustomerClustering()
