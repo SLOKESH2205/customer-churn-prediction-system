@@ -16,11 +16,10 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix
 )
-from sklearn.preprocessing import StandardScaler
-
 from xgboost import XGBClassifier
 
 from src.exception import CustomException
+from src.preprocessing import prepare_model_matrix
 
 
 class ModelTrainer:
@@ -64,28 +63,12 @@ class ModelTrainer:
             X_test = test_df[feature_cols]
             y_test = test_df[target_col]
 
-            # ================= ONE HOT ENCODING ================= #
-            X_train = pd.get_dummies(
-                X_train,
-                columns=["final_kmeans_cluster"],
-                prefix="cluster",
-                drop_first=True
-            )
-
-            X_test = pd.get_dummies(
-                X_test,
-                columns=["final_kmeans_cluster"],
-                prefix="cluster",
-                drop_first=True
-            )
-
-            # Align columns
-            X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
-            
-            # Save encoded feature column names BEFORE scaling
+            X_train = prepare_model_matrix(X_train)
+            X_test = prepare_model_matrix(X_test, training_columns=X_train.columns.tolist())
             encoded_feature_names = X_train.columns.tolist()
             
             # ================= SCALING ================= #
+            from sklearn.preprocessing import StandardScaler
             scaler = StandardScaler()
             X_train = scaler.fit_transform(X_train)
             X_test = scaler.transform(X_test)
@@ -189,7 +172,8 @@ class ModelTrainer:
             joblib.dump(
                 {
                     "model": best_model,
-                    "threshold": best_threshold_global
+                    "threshold": best_threshold_global,
+                    "model_name": best_model_name,
                 },
                 self.model_path
             )
