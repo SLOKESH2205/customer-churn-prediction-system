@@ -33,17 +33,6 @@ class DynamicChurnArtifacts:
     roc_curve_points: Dict[str, List[float]] | None = None
     classification_report_text: str = ""
 
-
-def evaluate_classification(y_true, y_pred, y_proba) -> Dict[str, float]:
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(roc_auc_score(y_true, y_proba)) if len(np.unique(y_true)) > 1 else float("nan"),
-    }
-
-
 class ChurnModelService:
     """Train-on-upload churn service used by the Streamlit app."""
 
@@ -59,6 +48,15 @@ class ChurnModelService:
         self.classification_report_text = artifacts.classification_report_text
         self.last_processed_df = None
         self.features = artifacts.train_columns
+
+    def evaluate(self, y_true, y_pred, y_proba) -> Dict[str, float]:
+        return {
+            "accuracy": float(accuracy_score(y_true, y_pred)),
+            "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+            "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+            "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
+            "roc_auc": float(roc_auc_score(y_true, y_proba)) if len(np.unique(y_true)) > 1 else float("nan"),
+        }
 
     @classmethod
     def train_from_customer_df(cls, customer_df: pd.DataFrame) -> "ChurnModelService":
@@ -109,7 +107,16 @@ class ChurnModelService:
                     best_threshold = float(threshold)
 
             final_pred = (y_prob >= best_threshold).astype(int)
-            best_metrics = evaluate_classification(y_test, final_pred, y_prob)
+            temp_service = cls(
+                DynamicChurnArtifacts(
+                    model=model,
+                    scaler=scaler,
+                    train_columns=model_df.columns.tolist(),
+                    threshold=best_threshold,
+                )
+            )
+            temp_service.evaluation_metrics = temp_service.evaluate(y_test, final_pred, y_prob)
+            best_metrics = temp_service.evaluation_metrics
             best_confusion = confusion_matrix(y_test, final_pred).tolist()
             best_report = classification_report(y_test, final_pred, zero_division=0)
             fpr, tpr, _ = roc_curve(y_test, y_prob)

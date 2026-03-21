@@ -357,7 +357,12 @@ if uploaded_file:
             f"{clustering_metrics.get('inertia', float('nan')):.1f}",
         )
 
-        clf_metrics = model_service.evaluation_metrics
+        if hasattr(model_service, "evaluation_metrics"):
+            clf_metrics = model_service.evaluation_metrics
+        else:
+            clf_metrics = {}
+            st.warning("Evaluation metrics not available.")
+
         perf_col1, perf_col2, perf_col3, perf_col4, perf_col5 = st.columns(5)
         perf_col1.metric("Accuracy", f"{clf_metrics.get('accuracy', float('nan')):.2f}")
         perf_col2.metric("Precision", f"{clf_metrics.get('precision', float('nan')):.2f}")
