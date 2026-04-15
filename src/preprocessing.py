@@ -63,6 +63,7 @@ def build_customer_features(
     kmeans_model: Optional[KMeans] = None,
     n_clusters: int = 3,
     cluster_options: Iterable[int] = (3, 4, 5),
+    reference_date: Optional[pd.Timestamp] = None,
 ) -> Tuple[pd.DataFrame, KMeans]:
     customer_df = normalize_transaction_columns(df)
     validate_transaction_columns(customer_df)
@@ -78,7 +79,10 @@ def build_customer_features(
         ["customer_id", "invoicedate"]
     )
 
-    reference_date = customer_df["invoicedate"].max() + pd.Timedelta(days=1)
+    if reference_date is None:
+        reference_date = customer_df["invoicedate"].max() + pd.Timedelta(days=1)
+    else:
+        reference_date = pd.to_datetime(reference_date)
 
     rfm = customer_df.groupby("customer_id").agg(
         invoicedate=("invoicedate", lambda x: (reference_date - x.max()).days),
@@ -105,7 +109,8 @@ def build_customer_features(
     for col in ["recency", "frequency", "monetary"]:
         rfm[f"{col}_log"] = np.log1p(rfm[col])
 
-    rfm["retention_status"] = (rfm["recency"] <= 90).astype(int)
+    # A customer is treated as churned when they have been inactive for more than 90 days.
+    rfm["retention_status"] = (rfm["recency"] > 90).astype(int)
 
     # Expose feature-level null counts for debugging data quality issues upstream.
     rfm.attrs["nan_summary"] = rfm.isna().sum()

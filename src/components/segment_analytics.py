@@ -35,9 +35,9 @@ def _classify_level(value: float, baseline: float, high: float = 1.15, low: floa
 
 
 def _risk_from_churn(churn_rate_pct: float) -> str:
-    if churn_rate_pct >= 40:
+    if churn_rate_pct >= 70:
         return "High"
-    if churn_rate_pct >= 15:
+    if churn_rate_pct >= 40:
         return "Medium"
     return "Low"
 
@@ -240,10 +240,14 @@ def analyze_segments(result_df: pd.DataFrame) -> Dict[str, object]:
 
     df = result_df.copy()
     feature_cols = _available_features(df)
+    risk_source = "Churn_Label"
+    if "Risk Segment" in df.columns:
+        df["High_Risk_Flag"] = (df["Risk Segment"] == "High Risk").astype(int)
+        risk_source = "High_Risk_Flag"
 
     agg_map = {
         "customer_count": ("cluster", "size"),
-        "predicted_churn_rate_pct": ("Churn_Label", lambda x: round(float(x.mean()) * 100, 2)),
+        "predicted_churn_rate_pct": (risk_source, lambda x: round(float(x.mean()) * 100, 2)),
         "avg_churn_probability_pct": ("Churn Probability", lambda x: round(float(x.mean()) * 100, 2)),
     }
 
@@ -253,7 +257,7 @@ def analyze_segments(result_df: pd.DataFrame) -> Dict[str, object]:
     summary = df.groupby("cluster").agg(**agg_map).reset_index()
     summary["segment_share_pct"] = (summary["customer_count"] / len(df) * 100).round(2)
 
-    overall_source_cols = ["Churn_Label", "Churn Probability", *feature_cols]
+    overall_source_cols = [risk_source, "Churn Probability", *feature_cols]
     overall = df[overall_source_cols].mean(numeric_only=True)
 
     personas = {}

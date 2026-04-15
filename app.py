@@ -13,7 +13,12 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precisio
 from src.clustering import evaluate_clustering
 from src.components.segment_analytics import analyze_segments
 from src.modeling import ChurnModelService
-from src.preprocessing import CLUSTER_FEATURE_COLUMNS, build_customer_features, prepare_model_matrix
+from src.preprocessing import (
+    CLUSTER_FEATURE_COLUMNS,
+    build_customer_features,
+    normalize_transaction_columns,
+    prepare_model_matrix,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -47,11 +52,48 @@ def generate_insights(row):
 
 
 def classify_risk(probability: float) -> str:
-    if probability > 0.8:
+    if probability >= 0.7:
         return "High Risk"
-    if probability > 0.5:
+    if probability >= 0.4:
         return "Medium Risk"
     return "Low Risk"
+
+
+def compute_dynamic_risk_thresholds(probabilities: pd.Series) -> tuple[float, float]:
+    clean_probabilities = pd.Series(probabilities).dropna().astype(float)
+    if clean_probabilities.empty:
+        return 0.4, 0.7
+
+    q1 = float(clean_probabilities.quantile(0.33))
+    q2 = float(clean_probabilities.quantile(0.66))
+    if np.isclose(q1, q2):
+        median = float(clean_probabilities.median())
+        q1 = median
+        q2 = median
+    return q1, q2
+
+
+def map_dynamic_risk(probability: float, low_cutoff: float, high_cutoff: float) -> str:
+    if probability >= high_cutoff:
+        return "High Risk"
+    if probability >= low_cutoff:
+        return "Medium Risk"
+    return "Low Risk"
+
+
+def apply_prediction_threshold(result_df: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    scored_df = result_df.copy()
+    scored_df["Predicted_Label"] = (scored_df["Churn Probability"] >= threshold).astype(int)
+    return scored_df
+
+
+def apply_dynamic_risk_segmentation(result_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    scored_df = result_df.copy()
+    low_cutoff, high_cutoff = compute_dynamic_risk_thresholds(scored_df["Churn Probability"])
+    scored_df["Risk Segment"] = scored_df["Churn Probability"].apply(
+        lambda prob: map_dynamic_risk(prob, low_cutoff, high_cutoff)
+    )
+    return scored_df, {"q1": low_cutoff, "q2": high_cutoff}
 
 
 @st.cache_data
@@ -103,7 +145,7 @@ def get_default_dataset_status():
         return {
             "source": "artifacts",
             "warning": "",
-            "caption": "Default mode uses the saved training and test datasets from the `artifacts/` folder.",
+            "caption": "Default mode loads transaction data from `artifacts/`, rebuilds customer features, and creates a fresh stratified customer-level holdout for evaluation.",
         }
     if bundled_sample_available():
         return {
@@ -153,9 +195,35 @@ def preprocess_uploaded_data(raw_df: pd.DataFrame):
 
 @st.cache_data
 def prepare_default_datasets():
+    from sklearn.model_selection import train_test_split
+
     train_raw_df, test_raw_df = load_default_raw_datasets()
-    train_customer_df, kmeans_model = build_customer_features(train_raw_df)
-    test_customer_df, _ = build_customer_features(test_raw_df, kmeans_model=kmeans_model)
+    combined_raw_df = pd.concat([train_raw_df, test_raw_df], ignore_index=True).drop_duplicates().reset_index(drop=True)
+    normalized_combined_raw = normalize_transaction_columns(combined_raw_df)
+    combined_reference_date = pd.to_datetime(
+        normalized_combined_raw["invoicedate"],
+        errors="coerce",
+    ).max() + pd.Timedelta(days=1)
+
+    combined_customer_df, kmeans_model = build_customer_features(
+        combined_raw_df,
+        reference_date=combined_reference_date,
+    )
+
+    stratify_target = combined_customer_df["retention_status"]
+    train_customer_df, test_customer_df = train_test_split(
+        combined_customer_df,
+        test_size=0.35,
+        random_state=42,
+        stratify=stratify_target if stratify_target.nunique() > 1 else None,
+    )
+    train_customer_df = train_customer_df.reset_index(drop=True)
+    test_customer_df = test_customer_df.reset_index(drop=True)
+
+    train_customer_ids = set(train_customer_df["customer_id"].astype(str))
+    test_customer_ids = set(test_customer_df["customer_id"].astype(str))
+    train_raw_df = combined_raw_df[normalized_combined_raw["customer_id"].astype(str).isin(train_customer_ids)].copy()
+    test_raw_df = combined_raw_df[normalized_combined_raw["customer_id"].astype(str).isin(test_customer_ids)].copy()
 
     clustering_metrics = evaluate_clustering(
         train_customer_df[CLUSTER_FEATURE_COLUMNS],
@@ -249,24 +317,61 @@ def render_section_header(title: str, description: str):
 
 
 def compute_live_threshold_metrics(result_df: pd.DataFrame):
-    if "Churn_Label_Actual" not in result_df.columns:
+    if "Churn_Label_Actual" not in result_df.columns or "Predicted_Label" not in result_df.columns:
         return {
             "accuracy": None,
             "precision": None,
             "recall": None,
             "f1_score": None,
+            "roc_auc": None,
+            "predictions_imbalanced": False,
             "confusion_matrix": None,
         }
 
     y_true = result_df["Churn_Label_Actual"]
-    y_pred = result_df["Churn_Label"]
+    y_pred = result_df["Predicted_Label"]
+    y_prob = result_df["Churn Probability"]
+    roc_auc = None
+    if len(np.unique(y_true)) > 1 and len(np.unique(y_prob)) > 1:
+        from sklearn.metrics import roc_auc_score
+
+        roc_auc = float(roc_auc_score(y_true, y_prob))
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
         "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
+        "roc_auc": roc_auc,
+        "predictions_imbalanced": len(np.unique(y_pred)) == 1,
         "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
     }
+
+
+def format_metric_value(value, fmt: str = ".2f") -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "Not Available"
+    return f"{value:{fmt}}"
+
+
+def build_threshold_tradeoff_table(result_df: pd.DataFrame) -> pd.DataFrame:
+    if "Churn_Label_Actual" not in result_df.columns or result_df.empty:
+        return pd.DataFrame()
+
+    y_true = result_df["Churn_Label_Actual"].astype(int)
+    y_prob = result_df["Churn Probability"].astype(float)
+    rows = []
+    for threshold in np.arange(0.2, 0.85, 0.1):
+        y_pred = (y_prob >= threshold).astype(int)
+        rows.append(
+            {
+                "Threshold": round(float(threshold), 2),
+                "Precision": float(precision_score(y_true, y_pred, zero_division=0)),
+                "Recall": float(recall_score(y_true, y_pred, zero_division=0)),
+                "F1 Score": float(f1_score(y_true, y_pred, zero_division=0)),
+                "Predicted Positives": int(y_pred.sum()),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def build_impact_table(segment_outputs: dict, save_rate: float, cost_per_customer: float, horizon_days: int):
@@ -437,16 +542,15 @@ def render_roc_curve(roc_curve_points, title: str):
 def render_model_insights_section(model_service, live_metrics, explainability, context_label: str):
     st.header("📊 Model Insights")
     st.caption(f"Evaluation view for {context_label}")
+    if live_metrics.get("predictions_imbalanced"):
+        st.warning("Model predictions are imbalanced. Adjust threshold.")
 
     metrics_row = st.columns(5)
-    metrics_row[0].metric("Accuracy", f"{live_metrics['accuracy']:.2%}" if live_metrics["accuracy"] is not None else "NA")
-    metrics_row[1].metric("Precision", f"{live_metrics['precision']:.2f}" if live_metrics["precision"] is not None else "NA")
-    metrics_row[2].metric("Recall", f"{live_metrics['recall']:.2f}" if live_metrics["recall"] is not None else "NA")
-    metrics_row[3].metric("F1 Score", f"{live_metrics['f1_score']:.2f}" if live_metrics["f1_score"] is not None else "NA")
-    metrics_row[4].metric(
-        "ROC-AUC",
-        f"{model_service.evaluation_metrics.get('roc_auc', float('nan')):.2f}" if model_service.evaluation_metrics else "NA",
-    )
+    metrics_row[0].metric("Accuracy", format_metric_value(live_metrics["accuracy"], ".2%"))
+    metrics_row[1].metric("Precision", format_metric_value(live_metrics["precision"]))
+    metrics_row[2].metric("Recall", format_metric_value(live_metrics["recall"]))
+    metrics_row[3].metric("F1 Score", format_metric_value(live_metrics["f1_score"]))
+    metrics_row[4].metric("ROC-AUC", format_metric_value(live_metrics.get("roc_auc")))
 
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
@@ -482,23 +586,27 @@ def render_dataset_dashboard(
     success_message: str | None = None,
 ):
     result_df = base_result_df.copy()
-    result_df["Churn_Label"] = (result_df["Churn Probability"] >= threshold).astype(int)
-    result_df["Risk Segment"] = result_df["Churn Probability"].apply(classify_risk)
+    logger.info("Churn probability distribution:\n%s", result_df["Churn Probability"].describe().to_string())
+    logger.info("Max churn probability: %.4f", float(result_df["Churn Probability"].max()))
+    result_df = apply_prediction_threshold(result_df, threshold)
+    result_df, risk_cutoffs = apply_dynamic_risk_segmentation(result_df)
 
     if success_message:
         st.success(success_message)
 
     st.info(
-        "Threshold Trade-off:\n\n"
-        "- Lower threshold -> capture more churn customers (high recall) but more false positives\n"
-        "- Higher threshold -> fewer false positives (high precision) but may miss some churners\n\n"
-        "Use this control to balance marketing cost versus retention coverage."
+        "Prediction vs Risk Segmentation:\n\n"
+        f"- Prediction threshold for metrics and binary labels: {threshold:.2f}\n"
+        f"- Low/Medium cutoff (33rd percentile): {risk_cutoffs['q1']:.3f}\n"
+        f"- Medium/High cutoff (66th percentile): {risk_cutoffs['q2']:.3f}\n\n"
+        "Binary model metrics use the threshold-based `Predicted_Label`, while dashboard targeting and personas use the quantile-based `Risk Segment`."
     )
 
     segment_outputs = compute_segment_outputs(result_df)
     explainability = model_service.explain_feature_importance(top_n=10)
     churn_driver_insights = model_service.explain_customer_churn_pattern(result_df)
     live_metrics = compute_live_threshold_metrics(result_df)
+    threshold_tradeoff = build_threshold_tradeoff_table(result_df)
     impact_table = build_impact_table(
         segment_outputs,
         save_rate=intervention_save_rate,
@@ -542,7 +650,7 @@ def render_dataset_dashboard(
             "persona_name": "Persona",
             "customer_count": "Customers",
             "segment_share_pct": "Share (%)",
-            "predicted_churn_rate_pct": "Predicted Churn (%)",
+            "predicted_churn_rate_pct": "High Risk Share (%)",
             "avg_churn_probability_pct": "Avg Churn Probability (%)",
             "risk_level": "Risk Level",
             "frequency_log": "Avg Frequency (log)",
@@ -564,7 +672,7 @@ def render_dataset_dashboard(
         ):
             st.markdown(f"**Key characteristics:** {', '.join(persona['key_characteristics'])}")
             st.markdown(f"**Behavioral interpretation:** {persona['behavioral_interpretation']}")
-            st.markdown(f"**Risk level:** {persona['risk_badge']} ({persona['predicted_churn_rate_pct']:.1f}% churn)")
+            st.markdown(f"**Risk level:** {persona['risk_badge']} ({persona['predicted_churn_rate_pct']:.1f}% high-risk share)")
             st.markdown(f"**Primary action:** {actions['primary_action']}")
             st.markdown(f"**Targeting rule:** {actions['targeting_rule']}")
             st.markdown(f"**Action owner:** {actions['owner']}")
@@ -574,7 +682,7 @@ def render_dataset_dashboard(
         "The model scores each customer, highlights risk concentration, and adds business-style risk segmentation.",
     )
     churn_col1, churn_col2, churn_col3, churn_col4 = st.columns(4)
-    predicted_churn = int(result_df["Churn_Label"].sum())
+    predicted_churn = int(result_df["Predicted_Label"].sum())
     churn_rate = (predicted_churn / len(result_df) * 100) if len(result_df) else 0
     churn_col1.metric("Predicted Churn Customers", predicted_churn)
     churn_col2.metric("Portfolio Churn Rate", f"{churn_rate:.2f}%")
@@ -583,6 +691,14 @@ def render_dataset_dashboard(
     risk_distribution = result_df["Risk Segment"].value_counts().rename_axis("Risk").reset_index(name="Customers")
     st.bar_chart(risk_distribution.set_index("Risk"), use_container_width=True)
     st.dataframe(result_df.sort_values("Churn Probability", ascending=False).head(20), use_container_width=True)
+
+    if not threshold_tradeoff.empty:
+        st.markdown("**Threshold Impact**")
+        st.line_chart(
+            threshold_tradeoff.set_index("Threshold")[["Precision", "Recall", "F1 Score"]],
+            use_container_width=True,
+        )
+        st.dataframe(threshold_tradeoff, use_container_width=True)
 
     render_model_insights_section(model_service, live_metrics, explainability, dataset_label)
 
@@ -613,14 +729,14 @@ def render_dataset_dashboard(
             "persona_name": "Persona",
             "customer_count": "Customers",
             "segment_share_pct": "Share (%)",
-            "predicted_churn_rate_pct": "Predicted Churn (%)",
+            "predicted_churn_rate_pct": "High Risk Share (%)",
             "avg_churn_probability_pct": "Avg Churn Probability (%)",
             "risk_level": "Risk Level",
         },
     )
     st.dataframe(churn_segment_table, use_container_width=True)
     churn_chart = segment_outputs["churn_table"].set_index("persona_name")[["predicted_churn_rate_pct"]]
-    churn_chart.columns = ["Predicted Churn (%)"]
+    churn_chart.columns = ["High Risk Share (%)"]
     st.bar_chart(churn_chart, use_container_width=True)
 
     render_section_header(
@@ -630,8 +746,8 @@ def render_dataset_dashboard(
     insight_list = []
     insight_list.extend(segment_outputs["insights"])
     insight_list.extend(churn_driver_insights)
-    risky = result_df[result_df["Churn_Label"] == 1]
-    stable = result_df[result_df["Churn_Label"] == 0]
+    risky = result_df[result_df["Predicted_Label"] == 1]
+    stable = result_df[result_df["Predicted_Label"] == 0]
     if not risky.empty and not stable.empty:
         if risky["avg_order_value"].mean() > stable["avg_order_value"].mean() and risky["purchase_rate"].mean() < stable["purchase_rate"].mean():
             insight_list.append(
@@ -767,8 +883,7 @@ def get_default_persona_lookup():
     _, _, train_customer_df, _, _ = prepare_default_datasets()
     model_service = train_default_model_service()
     train_predictions = model_service.score_customer_df(train_customer_df)
-    train_predictions["Churn_Label"] = (train_predictions["Churn Probability"] >= model_service.threshold).astype(int)
-    train_predictions["Risk Segment"] = train_predictions["Churn Probability"].apply(classify_risk)
+    train_predictions, risk_cutoffs = apply_dynamic_risk_segmentation(train_predictions)
     segment_outputs = compute_segment_outputs(train_predictions)
 
     persona_options = []
@@ -780,7 +895,7 @@ def get_default_persona_lookup():
                 "details": persona,
             }
         )
-    return persona_options
+    return persona_options, risk_cutoffs
 
 
 def render_single_prediction_mode():
@@ -792,7 +907,7 @@ def render_single_prediction_mode():
     st.caption(dataset_status["caption"])
 
     model_service = train_default_model_service()
-    persona_options = get_default_persona_lookup()
+    persona_options, risk_cutoffs = get_default_persona_lookup()
     persona_labels = [option["label"] for option in persona_options]
 
     with st.form("single_prediction_form"):
@@ -832,8 +947,8 @@ def render_single_prediction_mode():
 
     prediction_df = model_service.score_customer_df(input_customer_df)
     probability = float(prediction_df.loc[0, "Churn Probability"])
-    risk_segment = classify_risk(probability)
-    predicted_label = int(probability >= model_service.threshold)
+    risk_segment = map_dynamic_risk(probability, risk_cutoffs["q1"], risk_cutoffs["q2"])
+    predicted_label = int(probability >= threshold)
     actions = selected_persona["details"]["recommended_actions"]
 
     col1, col2, col3 = st.columns(3)
@@ -906,9 +1021,9 @@ try:
             campaign_cost_per_customer=campaign_cost_per_customer,
             impact_horizon_days=impact_horizon_days,
             show_advanced=show_advanced,
-            dataset_label="the default holdout test dataset",
+            dataset_label="the rebuilt default customer holdout dataset",
             success_message=(
-                "Default model insights loaded from the saved training/test artifacts."
+                "Default model insights loaded from artifact data with a rebuilt stratified customer holdout."
                 if dataset_status["source"] == "artifacts"
                 else "Default model insights loaded with fallback demo data."
             ),

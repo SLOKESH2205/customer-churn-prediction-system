@@ -40,8 +40,8 @@ class ChurnModelService:
         if len(y_true) == 0:
             return None
 
-        roc_auc = float("nan")
-        if len(np.unique(y_true)) > 1:
+        roc_auc = None
+        if len(np.unique(y_true)) > 1 and len(np.unique(y_proba)) > 1:
             roc_auc = float(roc_auc_score(y_true, y_proba))
 
         return {
