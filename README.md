@@ -480,6 +480,132 @@ The SQL layer works alongside the ML pipeline:
 * Combined → **decision intelligence system**
 
 ---
+---
+
+# 📊 Power BI Executive Dashboard Suite
+
+This repository now includes a **3-page Power BI Customer Churn Intelligence Dashboard** built on top of the existing SQL + Python + ML pipeline.
+
+The dashboard converts backend analytics into executive-ready business decisions using interactive visual storytelling.
+
+---
+
+## 🎯 Dashboard Objective
+
+Transform churn predictions, customer segments, and revenue metrics into actionable decisions for business stakeholders.
+
+The dashboard answers three key questions:
+
+1. **What happened?** → Business performance overview  
+2. **Who drives value?** → Customer segmentation intelligence  
+3. **What should we do next?** → Churn risk & retention strategy
+
+---
+
+# 🧭 Dashboard Pages
+
+## 1️⃣ Executive Business Overview
+
+Provides a high-level snapshot of business health.
+
+### Includes:
+
+- Total Revenue
+- Total Customers
+- Revenue at Risk
+- Churn Rate %
+- Avg CLV
+- Revenue by Top Markets
+- Customer Distribution by Segment
+- Monthly Revenue Trends
+- Key Executive Insights
+
+📌 Purpose: Quickly understand revenue performance and business risk.
+
+---
+
+## 2️⃣ Customer Segmentation Intelligence
+
+Analyzes customer behavior, loyalty, and long-term value.
+
+### Includes:
+
+- Champions Customers
+- Potential Loyalists
+- Lost Customers
+- Avg Monetary Value
+- Avg Purchase Frequency
+- Avg RFM Score
+- Segment Behavior Map
+- Customer Lifetime Value by Segment
+- Customer Composition by Segment
+- Segment Performance Matrix
+
+📌 Purpose: Identify which customer groups create the most value.
+
+---
+
+## 3️⃣ Churn Risk & Retention Strategy
+
+Focuses on proactive churn prevention and retention prioritization.
+
+### Includes:
+
+- Churn Rate %
+- Churned Customers
+- Revenue at Risk %
+- High Risk Customers
+- Retention Opportunities
+- Revenue Exposure by Segment
+- Predicted Churn Risk by Segment
+- Retention Priority Matrix
+- Recommended Actions Panel
+
+📌 Purpose: Convert churn analytics into business action plans.
+
+---
+
+# 🧠 Backend Integration
+
+The Power BI dashboard is powered by the full analytics pipeline already included in this repository:
+
+### SQL Layer
+
+- 6 business-focused SQL modules
+- Revenue impact analysis
+- Segmentation analysis
+- Geographic insights
+- Retention targeting logic
+
+### Python / ML Layer
+
+- Feature engineering
+- Customer-level modeling
+- XGBoost churn prediction
+- Risk scoring
+- Customer segmentation
+
+### Power BI Layer
+
+- DAX measures
+- KPI cards
+- Multi-page storytelling dashboards
+- Executive visualization layer
+
+---
+---
+
+# 📁 Dashboard Files Included
+
+```text
+POWER BI/
+└── CHURN PROJECT.pbix
+
+DashBoard_Images/
+├── Page1_Executive_Business_Overview.png
+├── Page2_Customer_Segmentation_Intelligence.png
+└── Page3_Churn_Risk_Retention_Strategy.png
+```
 
 ## 🚀 Why This Matters
 
